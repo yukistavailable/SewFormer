@@ -54,7 +54,11 @@ class DeepFashionDataset(torch.utils.data.Dataset):
         PIL.Image.init()
         self.resolution = resolution
 
-        self._ref_image_fnames = [os.path.join(root, fname) for root, _dirs, files
+        # if self._target_path is not directory, then it is a single image
+        if os.path.isfile(self._target_path):
+            self._ref_image_fnames = [self._target_path]
+        else:
+            self._ref_image_fnames = [os.path.join(root, fname) for root, _dirs, files
                                   in os.walk(os.path.join(self._target_path)) for fname in files]
         self._ref_image_fnames = [(i, self.get_segm_path(i)) for i in self._ref_image_fnames]
         self._ref_image_fnames_has_mask = [i for i in self._ref_image_fnames if i[1] is not None]
@@ -153,6 +157,7 @@ if __name__ == "__main__":
     
     shape_model, criterion, device = shape_experiment.load_detr_model(shape_dataset.config, others=False)
     
+    print(args.test_type)
     if args.test_type == "real":
         fns = [os.path.join(args.data_root, fn) for fn in os.listdir(args.data_root) if is_img_file(fn)]
         for idx, fn in enumerate(fns):
@@ -160,6 +165,7 @@ if __name__ == "__main__":
             dataname = os.path.basename(img_fn).split(".")[0]
 
             output = shape_model(img_tensor.to(device), return_stitches=True)
+            print(output.shape)
             _, _, prediction_img = shape_dataset.save_prediction_single(output, 
                                                                         dataname=dataname, 
                                                                         save_to=args.save_root, 

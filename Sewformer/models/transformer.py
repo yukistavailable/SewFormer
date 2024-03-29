@@ -41,7 +41,7 @@ class Transformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
     
-    def forward(self, src, mask, query_embed, pos_embed, return_self_attns=False):
+    def forward(self, src, mask, query_embed, pos_embed, return_self_attns=False, memory=None):
         # flatten NxCxHxW to HWxNxC
         bs, c, h, w = src.shape
         src = src.flatten(2).permute(2, 0, 1)
@@ -50,7 +50,11 @@ class Transformer(nn.Module):
         mask = mask.flatten(1)
 
         tgt = torch.zeros_like(query_embed)
-        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+        if memory is None:
+            memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+            print(type(memory))
+            print(memory.shape)
+            
         hs = self.decoder(tgt, memory, memory_key_padding_mask=mask, 
                           pos=pos_embed, query_pos=query_embed)
         if return_self_attns:

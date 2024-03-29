@@ -36,7 +36,7 @@ class ExperimentWrappper(object):
         self.run_name = config['experiment'].get('run_name', None)
         self.run_id = config['experiment'].get('run_id', None)
         self.run_local_path = config['experiment'].get('local_dir', None)
-        if config['experiment']['is_training'] and self.run_local_path is not None:
+        if config['experiment'].get('is_training') and self.run_local_path is not None:
             os.makedirs(self.run_local_path, exist_ok=True)
 
         self.no_sync = no_sync
@@ -246,7 +246,8 @@ class ExperimentWrappper(object):
         
         # Dataset
         data_class = getattr(data, data_config['class'])
-        dataset = data_class(data_root, data_config, gt_caching=True, feature_caching=False)
+        print(data_root)
+        dataset = data_class(data_root, sim_root = '', start_config=data_config, gt_caching=True, feature_caching=False)
 
         datawrapper = data.RealisticDatasetDetrWrapper(dataset, known_split=split, batch_size=batch_size)
         return dataset, datawrapper

@@ -6,7 +6,7 @@
 experiment:
   project_name: Garments-Reconstruction
   run_name: Detr2d-V6-final-dif-ce-focal-schd-agp
-  run_id: 
+  run_id:
   local_dir: ./garment_outputs/Detr2d-V6-final-dif-ce-focal-schd-agp
 
 # ----- Dataset-related properties -----

@@ -69,7 +69,7 @@ class GarmentDETRv6(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
     
-    def forward(self, samples, gt_stitches=None, gt_edge_mask=None, return_stitches=False):
+    def forward(self, samples, gt_stitches=None, gt_edge_mask=None, return_stitches=False, panel_memory=None, output_panel_memory=False):
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
         features, panel_pos = self.backbone(samples)
@@ -77,7 +77,7 @@ class GarmentDETRv6(nn.Module):
         src, mask = features[-1].decompose()
         B = src.shape[0]
         assert mask is not None
-        panel_joint_hs, panel_memory, _ = self.panel_transformer(self.input_proj(src), mask, self.panel_joints_query_embed.weight, panel_pos[-1])
+        panel_joint_hs, panel_memory, _ = self.panel_transformer(self.input_proj(src), mask, self.panel_joints_query_embed.weight, panel_pos[-1], memory=panel_memory)
         panel_joint_hs = self.panel_embed(panel_joint_hs)
         panel_hs = panel_joint_hs[:, :, :self.num_panel_queries, :]
         joint_hs = panel_joint_hs[:, :, self.num_panel_queries:, :]
@@ -138,6 +138,8 @@ class GarmentDETRv6(nn.Module):
         edge_similarity[mask] = 0
         out.update({"edge_similarity": edge_similarity})
         
+        if output_panel_memory:
+            out.update({"panel_memory": panel_memory})
         return out
 
 class MLP(nn.Module):
