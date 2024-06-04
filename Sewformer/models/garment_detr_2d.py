@@ -104,11 +104,15 @@ class GarmentDETRv6(nn.Module):
         panel_memory=None,
         output_panel_memory=False,
     ):
+        # samplesはinput_img_tensorを想定していると思われる
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
         features, panel_pos = self.backbone(samples)
+        # featuresの中にvisual_tokensが含まれると思われる、self.backbone()の詳細はbackbone.pyのJoinerを参照
+        # panel_posは入力画像に関わらず同じだと思われる。（異なる二つの入力画像に対してtorch.all(panel_pos_1==panel_pos_2)==Trueを確認済み）
 
         src, mask = features[-1].decompose()
+        # maskは入力画像に関わらず同じか？　異なる二つの入力画像に対してtorch.all(panel_pos_1==panel_pos_2)==Trueを確認済みだが、実装を理解する必要がある
         B = src.shape[0]
         assert mask is not None
         panel_joint_hs, panel_memory, _ = self.panel_transformer(
@@ -118,11 +122,14 @@ class GarmentDETRv6(nn.Module):
             panel_pos[-1],
             memory=panel_memory,
         )
+        # visual tokensだと思われるsrcをpanel_transformerに入力している
+        # maskはTransformerに入力するAttention Mask (https://lukesalamone.github.io/posts/what-are-attention-masks/)
         panel_joint_hs = self.panel_embed(panel_joint_hs)
         panel_hs = panel_joint_hs[:, :, : self.num_panel_queries, :]
         joint_hs = panel_joint_hs[:, :, self.num_panel_queries :, :]
         output_panel_rt = self.panel_rt_decoder(panel_hs)
 
+        # rotationとtranslationを計算
         output_rotations = output_panel_rt[:, :, :, :4]
         output_translations = output_panel_rt[:, :, :, 4:]
 
