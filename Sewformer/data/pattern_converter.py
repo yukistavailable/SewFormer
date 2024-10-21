@@ -1,3 +1,4 @@
+from typing import List
 import copy
 from datetime import datetime
 import numpy as np
@@ -54,6 +55,30 @@ class NNSewingPattern(VisPattern):
     @staticmethod
     def multi_pattern_as_tensors(patterns, pad_panels_to_len=None, pad_panels_num=None, pad_stitches_num=None,
             with_placement=False, with_stitches=False, with_stitch_tags=False, spec_dict=None): 
+        """
+        Parameters
+        ----------
+        patterns : List[NNSewingPattern]
+             オブジェクトのリスト。処理対象の複数の縫製パターン
+        pad_panels_to_len : int, optional
+            各パネル内のエッジ数をパディングする長さ
+        pad_panels_num : int, optional
+            パターン内のパネル数をパディングする長さ
+        pad_stitches_num : int, optional
+            ステッチ数をパディングする長さ
+        with_placement : bool, optional
+            パネルの配置情報（回転・平行移動）を含めるかどうか
+        with_stitches : bool, optional
+            ステッチ情報を含めるかどうか
+        with_stitch_tags : bool, optional
+            ステッチタグを含めるかどうか
+        spec_dict : dict, optional
+            Dictionary with the following keys:
+            * 'panel_order' : list of tuples (template_name, panel_name)
+            * 'stitches' : list of list of tuples (side1, side2)
+            * 'stitch_tags' : list of tags per edge
+        """
+
         if sys.version_info[0] < 3:
             raise RuntimeError('BasicPattern::Error::pattern_as_tensors() is only supported for Python 3.6+ and Scipy 1.2+')
 
