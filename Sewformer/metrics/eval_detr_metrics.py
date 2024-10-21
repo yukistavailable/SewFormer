@@ -1,12 +1,16 @@
 import torch
 import time
+from typing import Optional
 
 # My modules
 from data import InvalidPatternDefError
 
-def eval_detr_metrics(model, criterion, data_warpper, rank=0, section='test'):
+def eval_detr_metrics(model, criterion, data_warpper, rank: Optional[int]=0, section='test'):
 
-    device = 'cuda:{}'.format(rank) if torch.cuda.is_available() else 'cpu'
+    if rank is not None:
+        device = 'cuda:{}'.format(rank) if torch.cuda.is_available() else 'cpu'
+    else:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model.to(device)
     model.eval()
     criterion.to(device)
