@@ -1,15 +1,16 @@
-import argparse
 import os
 
 # My modules
 import sys
-from pprint import pprint
+from typing import Optional
 
 import numpy as np
 import torch
 import yaml
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
-root_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+root_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(""))))
 pkg_path = "{}/SewFactory/packages".format(root_path)
 sys.path.insert(0, pkg_path)
 print(pkg_path)
@@ -18,110 +19,197 @@ print(pkg_path)
 import customconfig
 
 import models
-from data import GarmentDetrDataset
-from experiment import ExperimentWrappper
-from metrics.eval_detr_metrics import eval_detr_metrics
-from trainer import TrainerDetr
+from data import MyGarmentDetrDataset
+from warm_cosine_scheduler import GradualWarmupScheduler
 
+np.set_printoptions(precision=4, suppress=True)
+with open("configs/my_train.yaml", "r") as f:
+    config = yaml.safe_load(f)
 
-def get_values_from_args():
-    """command line arguments to control the run for running wandb Sweeps!"""
-    # https://stackoverflow.com/questions/40001892/reading-named-command-arguments
-    parser = argparse.ArgumentParser()
+system_info = customconfig.Properties("./system.json")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    parser.add_argument(
-        "--config",
-        "-c",
-        help="YAML configuration file",
-        type=str,
-        default="configs/my_train.yaml",
+# Dataset Class
+dir_path = "/home/yuki/GarmentCode/Logs_dress_150_20"
+dataset = MyGarmentDetrDataset(
+    dir_path, classes_file=config["dataset"]["panel_classification"]
+)
+train_loader = DataLoader(
+    dataset, batch_size=config["trainer"]["batch_size"], shuffle=True
+)
+
+model, criterion = models.build_model(config)
+
+if torch.cuda.is_available():
+    model.to(device)
+    criterion.to(device)
+
+if config["NN"]["step-trained"] is not None and os.path.exists(
+    config["NN"]["step-trained"]
+):
+    model.load_state_dict(
+        torch.load(config["NN"]["step-trained"], map_location="cuda")[
+            "model_state_dict"
+        ]
     )
-    parser.add_argument("--test-only", "-t", action="store_true", default=False)
-    parser.add_argument("--local_rank", default=0)
-    args = parser.parse_args()
-
-    with open(args.config, "r") as f:
-        config = yaml.safe_load(f)
-
-    return config, args
-
-
-if __name__ == "__main__":
-    from pprint import pprint
-
-    np.set_printoptions(precision=4, suppress=True)
-    config, args = get_values_from_args()
-    system_info = customconfig.Properties("./system.json")
-
-    experiment = ExperimentWrappper(
-        config,  # set run id in cofig to resume unfinished run!
-        system_info["wandb_username"],
-        no_sync=False,
-    )
-
-    # Dataset Class
-    # data_class = getattr(data, config["dataset"]["class"])
-    dataset = GarmentDetrDataset(
-        system_info["datasets_path"],
-        system_info["sim_root"],
-        config["dataset"],
-        gt_caching=True,
-        feature_caching=False,
-    )
-
-    trainer = TrainerDetr(
-        config["trainer"],
-        experiment,
-        dataset,
-        config["data_split"],
-        with_norm=True,
-        with_visualization=config["trainer"]["with_visualization"],
-    )  # only turn on visuals on custom garment data
-    trainer.init_randomizer()
-
-    # --- Model ---
-    model, criterion = models.build_model(config)
-    model_without_ddp = model
-
-    if torch.cuda.is_available():
-        model.cuda()
-        criterion.cuda()
-
-    # Wrap model
-
-    if config["NN"]["step-trained"] is not None and os.path.exists(
-        config["NN"]["step-trained"]
-    ):
-        model.load_state_dict(
-            torch.load(config["NN"]["step-trained"], map_location="cuda")[
-                "model_state_dict"
-            ]
+    print(
+        "Train::Info::Load Pre-step-trained model: {}".format(
+            config["NN"]["step-trained"]
         )
-        print(
-            "Train::Info::Load Pre-step-trained model: {}".format(
-                config["NN"]["step-trained"]
+    )
+
+n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Train::Info::Number of params: {n_parameters}")
+
+# Train
+## Set Optimizer
+param_dicts = [
+    {
+        "params": [
+            p
+            for n, p in model.named_parameters()
+            if "backbone" not in n and p.requires_grad
+        ]
+    },
+    {
+        "params": [
+            p
+            for n, p in model.named_parameters()
+            if "backbone" in n and p.requires_grad
+        ],
+        "lr": float(config["trainer"]["lr_backbone"]),
+    },
+]
+optimizer = torch.optim.AdamW(
+    param_dicts,
+    lr=float(config["trainer"]["lr"] / 8),
+    weight_decay=float(config["trainer"]["weight_decay"]),
+)
+
+## Set Scheduler
+steps_per_epoch = 1000  # len(train_dataset) // config["trainer"]["batch_size"]
+if (
+    "lr_scheduling" in config["trainer"]
+    and config["trainer"]["lr_scheduling"] == "OneCycleLR"
+):
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=config["trainer"]["lr"],
+        epochs=config["trainer"]["epochs"],
+        steps_per_epoch=steps_per_epoch,
+        cycle_momentum=False,  # to work with Adam
+    )
+elif (
+    "lr_scheduling" in config["trainer"]
+    and config["trainer"]["lr_scheduling"] == "warm_cosine"
+):
+    consine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=config["trainer"]["epochs"] * steps_per_epoch,
+        eta_min=0,
+        last_epoch=-1,
+    )
+    scheduler = GradualWarmupScheduler(
+        optimizer,
+        multiplier=8,
+        total_epoch=5 * steps_per_epoch,
+        after_scheduler=consine_scheduler,
+    )
+
+else:
+    scheduler = None
+    print("TrainerDetr::Warning::no learning scheduling set")
+
+
+def preprocess_batch(batch):
+    images, gt = batch["image"], batch["ground_truth"]
+    images = images.to(device)
+    gt_stitches = gt["masked_stitches"].to(device)
+    gt_edge_mask = gt["stitch_edge_mask"].to(device)
+    reindex_stitches = gt["reindex_stitches"].to(device)
+    if len(gt_stitches.shape) == 3:
+        # (B, 1, N) -> (B, N)
+        gt_stitches = gt_stitches.squeeze(1)
+    if len(gt_edge_mask.shape) == 3:
+        # (B, 1, N) -> (B, N)
+        gt_edge_mask = gt_edge_mask.squeeze(1)
+    if len(reindex_stitches.shape) == 4:
+        # (B, 1, N, N) -> (B, N, N)
+        reindex_stitches = reindex_stitches.squeeze(1)
+
+    gt["masked_stitches"] = gt_stitches
+    gt["stitch_edge_mask"] = gt_edge_mask
+    gt["reindex_stitches"] = reindex_stitches
+
+    flag = False
+    label_indices = gt["label_indices"]
+    for i in range(len(label_indices)):
+        if not torch.all(label_indices[i] == label_indices[0]):
+            print("Train::Warning::label_indices are not the same")
+            flag = True
+    if not flag:
+        gt["label_indices"] = label_indices[0]
+
+    return images, gt
+
+
+# --- Training ---
+best_val_loss: Optional[int] = None
+for epoch in range(config["trainer"]["epochs"]):
+    model.train()
+    criterion.train()
+
+    for idx, batch in enumerate(tqdm(train_loader)):
+        images, gt = preprocess_batch(batch)
+
+        outputs = model(
+            images,
+            gt_stitches=gt["masked_stitches"],
+            gt_edge_mask=gt["stitch_edge_mask"],
+            return_stitches=config["trainer"]["return_stitches"],
+        )
+        loss, loss_dict = criterion(outputs, gt, epoch=epoch)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+        break
+
+    model.eval()
+    criterion.eval()
+    with torch.no_grad():
+        valid_losses, valid_loss_dict = [], {}
+        for batch in train_loader:
+            images, gt = preprocess_batch(batch)
+
+            outputs = model(
+                images,
+                gt_stitches=gt["masked_stitches"],
+                gt_edge_mask=gt["stitch_edge_mask"],
+                return_stitches=config["trainer"]["return_stitches"],
             )
-        )
+            loss
+            loss, loss_dict = criterion(outputs, gt, epoch=epoch)
+            valid_losses.append(loss.item())
+            if len(valid_loss_dict) == 0:
+                valid_loss_dict = {"valid_" + key: [] for key in loss_dict}
+            for key, val in loss_dict.items():
+                if val is not None:
+                    valid_loss_dict["valid_" + key].append(val.cpu())
+            break
 
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Train::Info::Number of params: {n_parameters}")
+        valid_losses = np.mean(valid_losses)
+        for key in valid_loss_dict:
+            valid_loss_dict[key] = np.mean(valid_loss_dict[key])
 
-    if not args.test_only:
-        trainer.fit(model, model_without_ddp, criterion, rank, config)
-    else:
-        config["loss"]["lepoch"] = -1
-        if config["NN"]["pre-trained"] is None or not os.path.exists(
-            config["NN"]["pre-trained"]
-        ):
-            print("Train::Error:Pre-trained model should be set for test only mode")
-            raise ValueError("Pre-trained model should be set for test")
-
-    # --- Final evaluation ----
-    model.load_state_dict(experiment.get_best_model()["model_state_dict"])
-    datawrapper = trainer.datawraper
-    final_metrics = eval_detr_metrics(model, criterion, datawrapper, None, "validation")
-    experiment.add_statistic("valid_on_best", final_metrics, log="Validation metrics")
-    pprint(final_metrics)
-    final_metrics = eval_detr_metrics(model, criterion, datawrapper, None, "test")
-    experiment.add_statistic("test_on_best", final_metrics, log="Test metrics")
-    pprint(final_metrics)
+        if best_val_loss is None or valid_losses < best_val_loss:
+            best_val_loss = valid_losses
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                },
+                "checkpoints/best_model.pth",
+            )
+            print(f"Train::Info::Save model at epoch: {epoch}, loss: {best_val_loss}")
