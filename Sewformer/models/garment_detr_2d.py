@@ -1,9 +1,10 @@
 import torch
 import torch.nn.functional as F
 import torchvision
-from metrics.composed_loss import ComposedPatternLoss
 from sklearn.metrics import classification_report
 from torch import nn
+
+from metrics.composed_loss import ComposedPatternLoss
 
 from .backbone import build_backbone
 from .transformer import TransformerDecoder, TransformerDecoderLayer, build_transformer
@@ -23,6 +24,76 @@ class GarmentDETRv6(nn.Module):
         num_joints,
         **edge_kwargs,
     ):
+        """
+        Initialize the GarmentDETRv6 model.
+
+        Parameters
+        ----------
+        backbone : nn.Module
+            The backbone network used to extract features from the input images.
+        panel_transformer : nn.Module
+            The transformer model used to predict the positions and shapes of garment panels.
+        num_panel_queries : int
+            The number of panel queries.
+        num_edges : int
+            The number of edges (seams) in the garment.
+        num_joints : int
+            The number of joints.
+        **edge_kwargs : dict
+            Additional keyword arguments related to edge prediction, including:
+            - nheads : int
+                Number of attention heads in the edge decoder.
+            - dropout : float
+                Dropout rate in the edge decoder.
+            - pre_norm : bool
+                Whether to use pre-norm in the edge decoder.
+            - dec_layers : int
+                Number of decoder layers in the edge decoder.
+            - edge_kwargs : dict
+                Additional parameters for edge prediction.
+
+        Attributes
+        ----------
+        backbone : nn.Module
+            The backbone network used to extract features from the input images.
+        num_panel_queries : int
+            The number of panel queries.
+        num_joint_queries : int
+            The number of joint queries.
+        panel_transformer : nn.Module
+            The transformer model used to predict the positions and shapes of garment panels.
+        hidden_dim : int
+            The hidden dimension size used in the model.
+        panel_embed : MLP
+            The MLP used to embed panel features.
+        panel_joints_query_embed : nn.Embedding
+            Embedding layer for panel and joint queries.
+        input_proj : nn.Conv2d
+            Convolutional layer to project input features to the hidden dimension.
+        panel_rt_decoder : MLP
+            MLP to decode panel rotation and translation.
+        joints_decoder : MLP
+            MLP to decode joint positions.
+        num_edges : int
+            The number of edges (seams) in the garment.
+        num_edge_queries : int
+            The number of edge queries.
+        edge_kwargs : dict
+            Additional parameters for edge prediction.
+        panel_decoder : MLP
+            MLP to decode panel edges.
+        edge_query_mlp : MLP
+            MLP to generate edge queries.
+        edge_embed : MLP
+            MLP to embed edge features.
+        edge_cls : MLP
+            MLP to classify edges.
+        edge_decoder : MLP
+            MLP to decode edge positions.
+        edge_trans_decoder : TransformerDecoder
+            Transformer decoder for edge prediction.
+
+        """
         super().__init__()
         self.backbone = backbone
 
@@ -66,8 +137,19 @@ class GarmentDETRv6(nn.Module):
         )
 
         self.edge_embed = MLP(self.hidden_dim, self.hidden_dim, self.hidden_dim, 2)
-        self.edge_cls = MLP(self.hidden_dim, self.hidden_dim // 2, 1, 2)
-        self.edge_decoder = MLP(self.hidden_dim, self.hidden_dim, 4, 2)
+        self.edge_cls = MLP(
+            input_dim=self.hidden_dim,
+            hidden_dim=self.hidden_dim // 2,
+            output_dim=1,
+            num_layers=2,
+        )
+        # output_dimが4なのは、(x, y, curvature_x, curvature_y)の4つの値を出力するため (data.pattern_converter.NNSewingPattern._edge_dict 参照)
+        self.edge_decoder = MLP(
+            input_dim=self.hidden_dim,
+            hidden_dim=self.hidden_dim,
+            output_dim=4,
+            num_layers=2,
+        )
 
     def build_edge_decoder(
         self,
@@ -107,6 +189,10 @@ class GarmentDETRv6(nn.Module):
         # samplesはinput_img_tensorを想定していると思われる
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
+
+        # backboneを用いて画像の特徴量を抽出
+        # models.backbone.build_backbone()で定義されたbackboneを実行している
+        # models.backbone.Backbone, models.backbone.Jointerも参照
         features, panel_pos = self.backbone(samples)
         # featuresの中にvisual_tokensが含まれると思われる、self.backbone()の詳細はbackbone.pyのJoinerを参照
         # panel_posは入力画像に関わらず同じだと思われる。（異なる二つの入力画像に対してtorch.all(panel_pos_1==panel_pos_2)==Trueを確認済み）
@@ -124,6 +210,8 @@ class GarmentDETRv6(nn.Module):
         )
         # visual tokensだと思われるsrcをpanel_transformerに入力している
         # maskはTransformerに入力するAttention Mask (https://lukesalamone.github.io/posts/what-are-attention-masks/)
+        # おそらく panel_joint_hsかpanel_hsがFig.7のPanel tokensに対応する
+        # self.panel_embedが論文のFig.7のPanel Decoderに該当すると思われる
         panel_joint_hs = self.panel_embed(panel_joint_hs)
         panel_hs = panel_joint_hs[:, :, : self.num_panel_queries, :]
         joint_hs = panel_joint_hs[:, :, self.num_panel_queries :, :]
@@ -141,9 +229,13 @@ class GarmentDETRv6(nn.Module):
         output_joints = self.joints_decoder(joint_hs)
         out.update({"smpl_joints": output_joints[-1]})
 
+        # edge_outputがFig.7のEdge queriesに対応すると思われる
+        # the shape of edge_output is (B, num_panels=23, max_num_edges=14, 4)
         edge_output = self.panel_decoder(panel_hs)[-1].view(
             B, self.num_panel_queries, self.num_edges, 4
         )
+        # Fig.7でExpanded tokensとEdge queriesを連結している部分
+        # the shape of edge_query is (num_panel * max_num_edges=23*14=322, B, hidden_dim=256)
         edge_query = (
             self.edge_query_mlp(
                 torch.cat(
@@ -171,6 +263,8 @@ class GarmentDETRv6(nn.Module):
         output_edge_embed = self.edge_embed(edge_hs)[-1]
 
         output_edge_cls = self.edge_cls(output_edge_embed)
+        # 論文のFig.7のEdge Decoderに該当する部分
+        # the shape of output_edge is (B, num_panels * max_num_edges, 4)
         output_edges = self.edge_decoder(output_edge_embed) + edge_output.view(B, -1, 4)
 
         out.update({"outlines": output_edges, "edge_cls": output_edge_cls})
@@ -255,6 +349,24 @@ class StitchLoss:
         self.loss = nn.BCEWithLogitsLoss()
 
     def __call__(self, similarity_matrix, gt_pos_neg_indices):
+        if len(gt_pos_neg_indices.shape) == 4:
+            batch_size = similarity_matrix.shape[0]
+            total_cross_entropy_loss = 0
+            total_max_loss = 0
+            for i in range(batch_size):
+                simi_matrix = similarity_matrix[i].reshape(-1, similarity_matrix.shape[-1])
+                tmp = simi_matrix[gt_pos_neg_indices[i, :, :, 0]]
+                simi_res = (
+                    torch.gather(tmp, -1, gt_pos_neg_indices[i, :, :, 1].unsqueeze(-1)) / 0.01
+                )
+                ce_label = torch.zeros(simi_res.shape[0]).to(simi_res.device)
+                tmp_cross_entropy_loss, tmp_max_loss =  F.cross_entropy(simi_res.squeeze(-1), ce_label.long()), (
+                    torch.max(simi_res.squeeze(-1), 1)[1] == 0
+                ).sum() * 1.0 / simi_res.shape[0]
+                total_cross_entropy_loss += tmp_cross_entropy_loss
+                total_max_loss += tmp_max_loss
+            return total_cross_entropy_loss, total_max_loss
+
         simi_matrix = similarity_matrix.reshape(-1, similarity_matrix.shape[-1])
         tmp = simi_matrix[gt_pos_neg_indices[:, :, 0]]
         simi_res = (

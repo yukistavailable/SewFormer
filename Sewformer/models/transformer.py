@@ -52,8 +52,6 @@ class Transformer(nn.Module):
         tgt = torch.zeros_like(query_embed)
         if memory is None:
             memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
-            print(type(memory))
-            print(memory.shape)
             
         hs = self.decoder(tgt, memory, memory_key_padding_mask=mask, 
                           pos=pos_embed, query_pos=query_embed)

@@ -617,6 +617,7 @@ class GarmentDetrDataset(Dataset):
         else:
             simi_matrix = similarity_matrix
             num_stitches = simi_matrix.shape[0] // 2
+        print(simi_matrix.shape)
         simi_matrix = torch.triu(simi_matrix, diagonal=1)
         stitches = []
         

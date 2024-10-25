@@ -148,6 +148,7 @@ class NNSewingPattern(VisPattern):
             panel_rotations.append(rot)
             aug_panel_seqs.append(aug_edges)
         
+        # ステッチの隣接行列の作成
         # Stitches info. Adj matrix organized as (num_panels * num_edges) X (num_panels * num_edges)
         if pad_panels_num is not None and pad_panels_to_len is not None:
             tl_edges = []
@@ -551,8 +552,8 @@ class NNSewingPattern(VisPattern):
         if all(np.isclose(fin_vert, 0, atol=3)):  # 3 cm per coordinate is a tolerable error
             edges.append(self._edge_dict(idx, 0, edge_info[2:4]))
         else:
-            print('BasicPattern::Warning::{} with panel {}::Edge sequence do not return to origin. '
-                  'Creating extra vertex'.format(self.name, panel_name))
+            # print('BasicPattern::Warning::{} with panel {}::Edge sequence do not return to origin. '
+                #   'Creating extra vertex'.format(self.name, panel_name))
             vertices = np.vstack([vertices, fin_vert])
             edges.append(self._edge_dict(idx, idx + 1, edge_info[2:4]))
 
@@ -874,10 +875,26 @@ class NNSewingPattern(VisPattern):
 
             Reloading 'panel_order' instead of 'define_panel_order' to preserve order from file 
                 if self.panel_classifier is not defined and 'force_update' is false
+
         """
         if self.panel_classifier is None or self.template_name is None:
             # preserves the order is given in pattern spec!
             order = super().panel_order(force_update=force_update)
+            # order = [
+            #     "top_front",
+            #     "top_back",
+            #     "sleeve_lf",
+            #     "sleeve_lb",
+            #     "sleeve_rf",
+            #     "sleeve_rb",
+            #     "wb_front",
+            #     "wb_back",
+            #     "pant_front_left",
+            #     "pant_front_right",
+            #     "pant_back_left",
+            #     "pant_back_right",
+            # ]
+
             
         else:  
             # NOTE: re-evaluate even if `force_update` flag is false
@@ -889,6 +906,7 @@ class NNSewingPattern(VisPattern):
             for panel_name in self.pattern['panels']:
                 class_idx = self.panel_classifier.class_idx(self.template_name, panel_name)
                 order[class_idx] = panel_name
+        # print("Order of panels according to classification: ", order)
         
         # Additionally pad to requested value if given
         if pad_to_len is not None:

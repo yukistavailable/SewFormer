@@ -225,6 +225,14 @@ def tv_make_img_transforms():
         T.ToTensor()
     ])
 
+def my_tv_make_img_transforms():
+    return T.Compose([
+        T.Resize((384, 384)),
+        # T.CenterCrop(400),
+        # T.Resize(384),
+        T.ToTensor()
+    ])
+
 def denormalize_img_transforms(mean=torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32), 
                               std=torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32)):
     return T.Compose(
