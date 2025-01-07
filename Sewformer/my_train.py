@@ -194,6 +194,9 @@ if __name__ == "__main__":
 
         train_loader_iters = [iter(loader) for loader in train_loaders]
         iter_idx = 0
+        stitch_acc = 0
+        stitch_loss = 0
+        total_loss = 0
         while True:
             train_loader_iter = train_loader_iters[iter_idx % len(train_loader_iters)]
             iter_idx += 1
@@ -211,10 +214,17 @@ if __name__ == "__main__":
                 return_stitches=config["trainer"]["return_stitches"],
             )
             loss, loss_dict = criterion(outputs, gt, epoch=epoch)
+            stitch_acc += loss_dict["stitch_acc"]
+            stitch_loss += loss_dict["stitch_ce_loss"]
+            total_loss += loss.item()
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             scheduler.step()
+
+        print(f"Train::Info::Epoch: {epoch}, loss: {total_loss / iter_idx}")
+        print(f"Train::Info::Epoch: {epoch}, stitch_acc: {stitch_acc / iter_idx}")
+        print(f"Train::Info::Epoch: {epoch}, stitch_loss: {stitch_loss / iter_idx}")
 
 
         model.eval()
@@ -240,6 +250,7 @@ if __name__ == "__main__":
                             tmp_outputs,
                             f"logs/{epoch}_{j}_{i}.svg",
                             f"logs/{epoch}_{j}_{i}.png",
+                            f"logs/{epoch}_{j}_{i}_spec.json",
                             return_stitches=True,
                             config=config,
                         )

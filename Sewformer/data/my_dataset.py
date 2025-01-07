@@ -378,6 +378,7 @@ class MyGarmentDetrDataset(Dataset):
         prediction,
         svg_file_path,
         png_file_path,
+        spec_file_path,
         return_stitches=False,
         config=None,
     ):
@@ -387,12 +388,13 @@ class MyGarmentDetrDataset(Dataset):
         pattern = MyGarmentDetrDataset._pred_to_pattern(
             prediction, return_stitches=return_stitches, config=config
         )
-        try:
+        # try:
+        if True:
             pattern.my_serialize(
-                svg_file=svg_file_path, png_file=png_file_path
+                svg_file=svg_file_path, png_file=png_file_path, spec_file=spec_file_path
             )
-        except (RuntimeError, InvalidPatternDefError, TypeError):
-            print("GarmentDetrDataset::Error:: serializing skipped")
+        # except (RuntimeError, InvalidPatternDefError, TypeError):
+        #     print("GarmentDetrDataset::Error:: serializing skipped")
 
 
 
